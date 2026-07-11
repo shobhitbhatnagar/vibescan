@@ -31,7 +31,7 @@ Account-skill sync into a Claude Code container can be flaky — if a session re
 isn't found, install it on disk yourself, which always works:
 
 ```bash
-git clone <your-repo-url> ~/.claude/skills/vibescan
+git clone https://github.com/shobhitbhatnagar/vibescan.git ~/.claude/skills/vibescan
 # or, from a checkout of this repo:
 bash install.sh
 ```
