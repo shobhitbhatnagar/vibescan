@@ -1,0 +1,84 @@
+# VibeScan AI-pattern starter rules (Opengrep/Semgrep-compatible).
+# These are original, license-clean patterns targeting anti-patterns common in
+# AI-generated ("vibe-coded") code. Drop your fuller proprietary rule packs
+# (python-security.yml, js-security.yml, etc.) alongside this file — the runner
+# loads every *.yml in this directory automatically.
+#
+# severity: ERROR -> high in findings, WARNING -> medium, INFO -> low.
+rules:
+  - id: vibescan-ai-eval-user-input
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: "eval() on dynamic input enables arbitrary code execution."
+    patterns:
+      - pattern: eval(...)
+    metadata:
+      category: ai_specific
+
+  - id: vibescan-ai-js-sqli-concat
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: "SQL query built by string concatenation — use parameterized queries."
+    patterns:
+      - pattern-either:
+          - pattern: $DB.query("..." + $X)
+          - pattern: $DB.query(`...${$X}...`)
+    metadata:
+      category: injection
+
+  - id: vibescan-ai-js-xss-innerhtml
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: "Assigning untrusted data to innerHTML is an XSS sink."
+    patterns:
+      - pattern: $EL.innerHTML = $X
+    metadata:
+      category: data_exposure
+
+  - id: vibescan-ai-py-sqli-fstring
+    languages: [python]
+    severity: ERROR
+    message: "SQL built with an f-string / concatenation — use parameter binding."
+    patterns:
+      - pattern-either:
+          - pattern: $CUR.execute(f"...{$X}...")
+          - pattern: $CUR.execute("..." + $X)
+    metadata:
+      category: injection
+
+  - id: vibescan-ai-py-cmdi-shell-true
+    languages: [python]
+    severity: ERROR
+    message: "subprocess with shell=True on dynamic input allows command injection."
+    patterns:
+      - pattern: subprocess.$FN(..., shell=True, ...)
+    metadata:
+      category: injection
+
+  - id: vibescan-ai-py-insecure-pickle
+    languages: [python]
+    severity: ERROR
+    message: "pickle.loads on untrusted data can execute arbitrary code."
+    patterns:
+      - pattern: pickle.loads(...)
+    metadata:
+      category: insecure_pattern
+
+  - id: vibescan-ai-py-yaml-unsafe-load
+    languages: [python]
+    severity: WARNING
+    message: "yaml.load without SafeLoader can instantiate arbitrary objects."
+    patterns:
+      - pattern: yaml.load($X)
+      - pattern-not: yaml.load($X, Loader=yaml.SafeLoader)
+    metadata:
+      category: insecure_pattern
+
+  - id: vibescan-ai-cors-wildcard
+    languages: [javascript, typescript, python]
+    severity: WARNING
+    message: "Wildcard CORS origin — common insecure default in generated code."
+    patterns:
+      - pattern-regex: "(Access-Control-Allow-Origin.{0,10}\\*)"
+    metadata:
+      category: config_issue

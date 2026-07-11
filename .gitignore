@@ -1,0 +1,5 @@
+.vibescan/raw/
+.vibescan/previous.json
+.vibescan/report.md
+__pycache__/
+*.pyc
