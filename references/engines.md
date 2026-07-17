@@ -1,7 +1,5 @@
 # Engines
 
-# Engines
-
 **By default you don't need to install anything manually.** On the first scan, `run_scan.sh`
 auto-installs any missing engine with a printed notice — gitleaks into `~/.vibescan/bin` and
 semgrep into the user site. OSV needs no install (it's an API call). Pass `--no-install` (or
@@ -45,6 +43,8 @@ stage degrades to an empty result.
 ## Not used (on purpose)
 
 - **TruffleHog** — AGPL-3.0, a copyleft SaaS risk.
-- **Semgrep registry rules** — Semgrep Rules License v1.0 restricts competing-product use.
-  The Opengrep/Semgrep *engine* is fine; only the registry rule content is avoided. All
-  rules shipped in `assets/rules/` are original VibeScan-authored patterns.
+- **Semgrep's `--config auto` / registry path** — logs into the registry and sends the
+  project URL (telemetry). Avoided; SAST runs local rule folders only.
+- **Rule sources.** The bundled `assets/rules/` pack is original, MIT-licensed VibeScan work.
+  Multi-language SAST additionally uses the opengrep-rules mirror, which is LGPL-2.1 + Commons
+  Clause (no-sell) — a mixed-license build. See `THIRD_PARTY_LICENSES.md`.

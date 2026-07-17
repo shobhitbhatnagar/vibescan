@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """VibeScan passive DAST — inspect a LIVE web app over HTTP (non-destructive).
 
-Checks security headers, TLS/HSTS, cookie flags, CORS, version disclosure, and a small
+Checks security headers, TLS/HSTS, per-cookie flags, CORS via an Origin-reflection probe (not full preflight analysis), version disclosure, and a small
 set of well-known exposed paths (.env, .git). GET/HEAD only — no fuzzing, no writes, no
 destructive methods. Emits findings in VibeScan's schema to stdout as {"findings":[...]}.
 
@@ -12,9 +12,11 @@ the target. Never point it at a URL you don't control.
 Usage: web_scan.py <url> --authorized
 """
 import json
+import hashlib
 import socket
 import ssl
 import sys
+import uuid
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -37,14 +39,25 @@ def _finding(category, severity, title, remediation, url, evidence="", confidenc
     }
 
 
-def _get(url, method="GET"):
-    req = urllib.request.Request(url, method=method, headers={"User-Agent": UA})
+def _get(url, method="GET", origin=None):
+    hdrs = {"User-Agent": UA}
+    if origin:
+        hdrs["Origin"] = origin
+    req = urllib.request.Request(url, method=method, headers=hdrs)
     ctx = ssl.create_default_context()
     try:
         resp = urllib.request.urlopen(req, timeout=TIMEOUT, context=ctx)
-        return resp.status, {k.lower(): v for k, v in resp.headers.items()}, resp
+        raw = resp.headers
+        d = {k.lower(): v for k, v in raw.items()}
+        d["_set_cookies"] = raw.get_all("Set-Cookie") or []
+        d["_final_url"] = resp.geturl()
+        return resp.status, d, resp
     except urllib.error.HTTPError as e:
-        return e.code, {k.lower(): v for k, v in (e.headers or {}).items()}, None
+        raw = e.headers
+        d = {k.lower(): v for k, v in (raw or {}).items()}
+        d["_set_cookies"] = (raw.get_all("Set-Cookie") if raw else []) or []
+        d["_final_url"] = getattr(e, "url", url)
+        return e.code, d, None
     except Exception:
         return None, {}, None
 
@@ -77,34 +90,47 @@ def check_headers_and_cookies(url, headers, findings):
                 "config_issue", "info", f"Version/tech disclosure via {h} header",
                 f"Suppress or genericize the {h} header to reduce fingerprinting.",
                 url, evidence=f"{h}: {headers[h]}"))
-    # CORS
+    # cookies — assess each Set-Cookie separately so one secure cookie can't mask another;
+    # report the cookie NAME only, never its value
+    for raw_cookie in headers.get("_set_cookies", []):
+        parts = [p.strip() for p in raw_cookie.split(";")]
+        name = parts[0].split("=", 1)[0].strip()
+        # attribute NAMES only (not the cookie name/value), so "insecuretoken=..." can't
+        # be misread as having a Secure attribute
+        attrs = {p.split("=", 1)[0].strip().lower() for p in parts[1:]}
+        if "secure" not in attrs:
+            findings.append(_finding("auth_issue", "high", f"Cookie '{name}' missing Secure flag",
+                "Set Secure so the cookie is only sent over HTTPS.", url, evidence=f"cookie: {name}"))
+        if "httponly" not in attrs:
+            findings.append(_finding("auth_issue", "medium", f"Cookie '{name}' missing HttpOnly flag",
+                "Set HttpOnly so the cookie isn't readable by JavaScript (XSS theft).", url, evidence=f"cookie: {name}"))
+        if "samesite" not in attrs:
+            findings.append(_finding("config_issue", "low", f"Cookie '{name}' missing SameSite",
+                "Set SameSite=Lax or Strict to reduce CSRF exposure.", url, evidence=f"cookie: {name}"))
+
+
+def check_cors(url, findings):
+    """Actively probe CORS with a controlled Origin, since many servers only emit CORS
+    headers when an Origin is present. Passive, non-mutating GET."""
+    probe = "https://vibescan.invalid"
+    status, headers, _ = _get(url, origin=probe)
+    if status is None:
+        return
     acao = headers.get("access-control-allow-origin", "")
     acac = headers.get("access-control-allow-credentials", "").lower()
-    if acao == "*" and acac == "true":
-        findings.append(_finding(
-            "config_issue", "high", "CORS allows any origin with credentials",
-            "Never combine Access-Control-Allow-Origin: * with Allow-Credentials: true; echo an allowlisted origin.",
+    if acao == probe:
+        sev = "high" if acac == "true" else "medium"
+        findings.append(_finding("config_issue", sev, "CORS reflects an arbitrary Origin",
+            "Echo only allowlisted origins; do not reflect the request Origin."
+            + (" Never reflect an origin together with Allow-Credentials: true." if acac == "true" else ""),
+            url, evidence="reflected test origin" + (" + credentials" if acac == "true" else "")))
+    elif acao == "*" and acac == "true":
+        findings.append(_finding("config_issue", "high", "CORS allows any origin with credentials",
+            "Never combine Access-Control-Allow-Origin: * with Allow-Credentials: true.",
             url, evidence="ACAO: * + ACAC: true"))
     elif acao == "*":
-        findings.append(_finding(
-            "config_issue", "medium", "Wildcard CORS (Access-Control-Allow-Origin: *)",
+        findings.append(_finding("config_issue", "medium", "Wildcard CORS (Access-Control-Allow-Origin: *)",
             "Restrict CORS to an explicit origin allowlist.", url))
-    # cookies
-    setcookie = headers.get("set-cookie", "")
-    if setcookie:
-        low = setcookie.lower()
-        if "secure" not in low:
-            findings.append(_finding(
-                "auth_issue", "high", "Session cookie missing Secure flag",
-                "Set the Secure flag so cookies are only sent over HTTPS.", url))
-        if "httponly" not in low:
-            findings.append(_finding(
-                "auth_issue", "medium", "Session cookie missing HttpOnly flag",
-                "Set HttpOnly so cookies aren't readable by JavaScript (XSS theft).", url))
-        if "samesite" not in low:
-            findings.append(_finding(
-                "config_issue", "low", "Session cookie missing SameSite attribute",
-                "Set SameSite=Lax or Strict to reduce CSRF exposure.", url))
 
 
 def check_tls(url, findings):
@@ -134,26 +160,48 @@ def check_tls(url, findings):
         pass
 
 
+def _probe(u):
+    """(status, final_url, body_sha, length) for a GET, or None if unreachable."""
+    status, headers, resp = _get(u)
+    if status is None:
+        return None
+    body = b""
+    try:
+        body = resp.read(65536) if resp else b""
+    except Exception:
+        pass
+    return status, headers.get("_final_url", u), hashlib.sha256(body).hexdigest(), len(body)
+
+
 def check_exposed_paths(base, findings):
     p = urlparse(base)
     root = f"{p.scheme}://{p.netloc}"
+    host = p.netloc
+    # Baseline: a path that should NOT exist. SPAs and custom 404s often 200 the app shell
+    # for everything, so anything that matches this fallback is not a real exposure.
+    baseline = _probe(root + "/vibescan-not-found-" + uuid.uuid4().hex[:12])
     for path in EXPOSED_PATHS:
-        status, headers, resp = _get(root + path)
-        if status == 200:
-            body = ""
-            try:
-                body = resp.read(256).decode("utf-8", "replace") if resp else ""
-            except Exception:
-                pass
-            # crude sanity: many servers 200 a custom 404 page; flag only if it looks like the real thing
-            looks_real = any(m in body for m in ("[core]", "ref:", "=", "AWS", "aws_")) or path.endswith("HEAD")
-            sev = "critical" if path in ("/.env", "/.git/config", "/.aws/credentials") else "high"
-            findings.append(_finding(
-                "data_exposure", sev if looks_real else "medium",
-                f"Potentially exposed sensitive path: {path}",
-                f"Block public access to {path}; it should never be web-served.",
-                root + path, evidence=body[:120],
-                confidence="high" if looks_real else "low"))
+        probe = _probe(root + path)
+        if not probe:
+            continue
+        status, final_url, bhash, length = probe
+        if status != 200:
+            continue
+        fp = urlparse(final_url)
+        # redirected elsewhere (login/home, or another host) -> not proof of exposure
+        if fp.netloc != host or fp.path.rstrip("/") != path.rstrip("/"):
+            continue
+        # indistinguishable from the generic fallback -> not the real file. Match on body
+        # hash only; equal length alone is NOT sufficient (a real file can share a length).
+        if baseline and status == baseline[0] and bhash == baseline[2]:
+            continue
+        sev = "critical" if path in ("/.env", "/.git/config", "/.aws/credentials") else "high"
+        findings.append(_finding(
+            "data_exposure", sev,
+            f"Potentially exposed sensitive path: {path}",
+            f"Block public access to {path}; it should never be web-served.",
+            root + path, evidence=f"HTTP 200, {length}B, differs from fallback page",
+            confidence="medium"))
 
 
 def main():
@@ -171,13 +219,14 @@ def main():
     findings = []
     status, headers, _ = _get(url)
     if status is None:
-        print(f"WARN: could not reach {url}", file=sys.stderr)
-        print('{"findings":[]}')
-        return
+        print(json.dumps({"status": "failed", "targetReachable": False,
+                          "error": f"could not reach {url}", "findings": []}))
+        sys.exit(3)
     check_headers_and_cookies(url, headers, findings)
+    check_cors(url, findings)
     check_tls(url, findings)
     check_exposed_paths(url, findings)
-    print(json.dumps({"findings": findings}))
+    print(json.dumps({"status": "success", "targetReachable": True, "findings": findings}))
 
 
 if __name__ == "__main__":

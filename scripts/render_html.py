@@ -14,7 +14,7 @@ import sys
 
 BAND_COLOR = {
     "critical": "#f85149", "high": "#f0883e", "medium": "#d29922",
-    "low": "#3fb950", "clean": "#3fb950",
+    "low": "#3fb950", "clean": "#3fb950", "unknown": "#8b949e",
 }
 SEV_COLOR = {
     "critical": "#f85149", "high": "#f0883e", "medium": "#d29922",
@@ -67,22 +67,37 @@ def main():
     data = json.load(open(os.path.join(target, ".vibescan", "findings.json")))
     s = data.get("summary", {})
     findings = data.get("findings", [])
+    scan_status = s.get("scanStatus", "complete")
     band = s.get("overallRisk", "clean")
-    band_color = BAND_COLOR.get(band, "#3fb950")
     score = s.get("riskScore", 0)
     by_sev = s.get("bySeverity", {})
     degraded = s.get("degradedScanners", [])
+    engines_ran = s.get("enginesRan", [])
     changes = s.get("changesSinceLastScan")
+    incomplete = scan_status != "complete"
+    band_color = BAND_COLOR.get(band, "#8b949e")
+    if incomplete:
+        band_color = "#d29922" if scan_status == "partial" else "#8b949e"
 
-    # engine scorecard
+    # engine scorecard — AI-pattern rules run inside SAST, so fold them into opengrep;
+    # show only engines that were actually applicable (ran or degraded), incl. DAST.
     counts_by_scanner = {}
     for f in findings:
-        counts_by_scanner[f.get("scanner")] = counts_by_scanner.get(f.get("scanner"), 0) + 1
-    engines = [
-        ("gitleaks", "secrets"), ("opengrep", "SAST"),
-        ("ai_patterns", "AI-pattern"), ("osv", "dependencies"),
-    ]
-    cards = "".join(card(f) for f in findings) or '<p class="empty">✓ No secrets, injection, insecure patterns, or vulnerable dependencies detected by the engines that ran.</p>'
+        k = f.get("scanner")
+        k = "opengrep" if k == "ai_patterns" else k
+        counts_by_scanner[k] = counts_by_scanner.get(k, 0) + 1
+    ENGINE_LABELS = [("gitleaks", "secrets"), ("opengrep", "SAST"),
+                     ("osv", "dependencies"), ("dast", "web (DAST)")]
+    engines = [(k, lb) for (k, lb) in ENGINE_LABELS if k in engines_ran or k in degraded] \
+        or [("gitleaks", "secrets"), ("opengrep", "SAST"), ("osv", "dependencies")]
+    if findings:
+        cards = "".join(card(f) for f in findings)
+    elif scan_status == "complete":
+        cards = ('<p class="empty">✓ No secrets, injection, insecure patterns, or vulnerable '
+                 'dependencies detected. All applicable engines ran.</p>')
+    else:
+        cards = ('<p class="empty-incomplete">No findings were produced, but the scan was '
+                 'incomplete (see the banner above). This is not a clean result.</p>')
 
     low_conf_only = findings and all(f.get("confidence") == "low" for f in findings)
     caveat = ""
@@ -102,7 +117,14 @@ def main():
     sev_pills = "".join(
         f'<span class="pill" style="--c:{SEV_COLOR.get(k)}">{by_sev.get(k)} {k}</span>'
         for k in ("critical", "high", "medium", "low", "info") if by_sev.get(k)
-    ) or '<span class="pill" style="--c:#3fb950">0 findings</span>'
+    )
+    if not sev_pills:
+        if scan_status == "complete":
+            sev_pills = '<span class="pill" style="--c:#3fb950">0 findings</span>'
+        elif scan_status == "failed":
+            sev_pills = '<span class="pill" style="--c:#8b949e">no usable assessment</span>'
+        else:
+            sev_pills = '<span class="pill" style="--c:#d29922">0 findings · incomplete coverage</span>'
 
     changes_strip = ""
     if changes:
@@ -111,13 +133,36 @@ def main():
                          f'<b class="fixed">{changes["fixed"]} fixed</b> · '
                          f'<b>{changes["persisting"]} still open</b></div>')
 
-    n_engines = len([e for e in ("gitleaks", "opengrep", "osv") if e not in degraded])
-    if band == "clean":
+    score_display = "N/A" if score is None else esc(score)
+    score_unit = "" if score is None else '<small>/100</small>'
+    incomplete_html = ""
+    if incomplete:
+        if scan_status == "failed":
+            _msg = (f"Required engines did not complete ({esc(', '.join(degraded))}). "
+                    "No conclusion about code safety can be made.")
+        else:
+            _msg = (f"{esc(', '.join(degraded))} did not complete. Findings are a floor, not a "
+                    "complete assessment — absence of findings is not a clean result.")
+        incomplete_html = f'<div class="incomplete">⛔ ASSESSMENT INCOMPLETE — {_msg}</div>'
+
+    cov = s.get("coverageNotes", [])
+    cov_html = ""
+    if cov:
+        items = "".join(f"<li>{esc(c)}</li>" for c in cov)
+        cov_html = f'<div class="covnotes"><b>Coverage notes</b><ul>{items}</ul></div>'
+
+    if scan_status == "failed":
+        band_label, subtitle = "Assessment incomplete", ""
+    elif scan_status == "partial" and not findings:
+        band_label, subtitle = "Partial — inconclusive", ""
+    elif scan_status == "partial":
+        band_label, subtitle = f"{esc(band)} risk · partial coverage", ""
+    elif band == "clean":
+        n_engines = len([e for e in ("gitleaks", "opengrep", "osv") if e not in degraded])
         band_label = "✓ Clean"
         subtitle = f'<div class="subtitle">No issues found · {n_engines} engine{"s" if n_engines != 1 else ""} ran clean</div>'
     else:
-        band_label = f"{esc(band)} risk"
-        subtitle = ""
+        band_label, subtitle = f"{esc(band)} risk", ""
 
     doc = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -156,7 +201,13 @@ body {{
 .engine.clean .ev {{ color:#3fb950; }} .engine.hit .ev {{ color:#f0883e; }} .engine.deg .ev {{ color:#8b949e; }}
 .caveat {{ background:rgba(210,153,34,.1); border:1px solid #d29922; color:#e3b341;
   border-radius:8px; padding:12px 14px; font-size:13px; margin-bottom:16px; }}
+.incomplete {{ background:rgba(210,153,34,.12); border:1px solid #d29922; color:#e3b341;
+  border-radius:10px; padding:16px 18px; font-size:14px; font-weight:600; margin-bottom:16px; }}
+.empty-incomplete {{ color:#e3b341; }}
 .deg-note {{ font-size:12px; color:#8b949e; margin-bottom:16px; }}
+.covnotes {{ background:#161b22; border:1px solid #21262d; border-radius:8px; padding:12px 16px;
+  font-size:13px; color:#c9d1d9; margin-bottom:16px; }}
+.covnotes ul {{ margin:6px 0 0; padding-left:18px; }} .covnotes b {{ color:#e3b341; }}
 h2.section {{ font-size:13px; text-transform:uppercase; letter-spacing:.08em; color:#8b949e; margin:24px 0 10px; }}
 .finding {{ background:#161b22; border:1px solid #21262d; border-left:3px solid var(--sev);
   border-radius:8px; padding:16px 18px; margin-bottom:12px; }}
@@ -183,16 +234,18 @@ footer {{ margin-top:28px; font-size:12px; color:#484f58; text-align:center; fon
 </style></head>
 <body><div class="wrap">
   <div class="brand mono">🛡 <b>VibeScan</b> · security report</div>
+  {incomplete_html}
   <div class="verdict">
     <div class="band">{band_label}</div>
-    <div class="score">{esc(score)}<small>/100</small></div>
+    <div class="score">{score_display}{score_unit}</div>
     {subtitle}
     <div class="pills">{sev_pills}</div>
     {changes_strip}
   </div>
   {caveat}
   <div class="scorecard">{engine_cells}</div>
-  {"<div class='deg-note mono'>Degraded (unavailable): " + esc(", ".join(degraded)) + "</div>" if degraded else ""}
+  {"<div class='deg-note mono'>Did not complete: " + esc(", ".join(degraded)) + "</div>" if degraded else ""}
+  {cov_html}
   <h2 class="section">Findings ({len(findings)})</h2>
   {cards}
   <footer>Generated by VibeScan · fingerprints are stable across scans</footer>

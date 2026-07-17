@@ -1,15 +1,17 @@
 # VibeScan AI-pattern starter rules (Opengrep/Semgrep-compatible).
-# These are original, license-clean patterns targeting anti-patterns common in
-# AI-generated ("vibe-coded") code. Drop your fuller proprietary rule packs
-# (python-security.yml, js-security.yml, etc.) alongside this file — the runner
-# loads every *.yml in this directory automatically.
+# Original, license-clean patterns targeting anti-patterns common in AI-generated
+# ("vibe-coded") code. Drop additional *.yml rule files alongside this one — the
+# runner loads every *.yml in this directory automatically.
 #
 # severity: ERROR -> high in findings, WARNING -> medium, INFO -> low.
+# Sinks whose danger depends on the data source (eval, pickle) are WARNING, not
+# ERROR: the pattern can't prove the input is user-controlled, so flagging it high
+# would overstate confidence. Promote to high in manual review once taint is shown.
 rules:
-  - id: vibescan-ai-eval-user-input
+  - id: vibescan-ai-eval-sink
     languages: [javascript, typescript]
-    severity: ERROR
-    message: "eval() on dynamic input enables arbitrary code execution."
+    severity: WARNING
+    message: "eval() call — arbitrary code execution if the argument is user-controlled. Verify the input source."
     patterns:
       - pattern: eval(...)
     metadata:
@@ -28,12 +30,12 @@ rules:
 
   - id: vibescan-ai-js-xss-innerhtml
     languages: [javascript, typescript]
-    severity: ERROR
-    message: "Assigning untrusted data to innerHTML is an XSS sink."
+    severity: WARNING
+    message: "innerHTML assignment — XSS sink if the value is untrusted. Escape it or use textContent."
     patterns:
       - pattern: $EL.innerHTML = $X
     metadata:
-      category: data_exposure
+      category: injection
 
   - id: vibescan-ai-py-sqli-fstring
     languages: [python]
@@ -57,8 +59,8 @@ rules:
 
   - id: vibescan-ai-py-insecure-pickle
     languages: [python]
-    severity: ERROR
-    message: "pickle.loads on untrusted data can execute arbitrary code."
+    severity: WARNING
+    message: "pickle.loads() — arbitrary code execution if the data is untrusted. Verify the source."
     patterns:
       - pattern: pickle.loads(...)
     metadata:

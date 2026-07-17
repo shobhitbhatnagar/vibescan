@@ -41,6 +41,11 @@ def fingerprint(*parts):
     return hashlib.sha256("|".join(str(p) for p in parts).encode()).hexdigest()[:16]
 
 
+def norm(s):
+    """Collapse whitespace/case so fingerprints track the code, not the line number."""
+    return re.sub(r"\s+", " ", (s or "").strip().lower())[:200]
+
+
 def redact(text):
     if not text:
         return ""
@@ -70,6 +75,7 @@ def from_gitleaks(target, data):
         rule_id = r.get("RuleID") or ""
         title = rule_id or r.get("Description") or "Hardcoded secret"
         low_conf = bool(LOW_CONF_SECRET_RE.search(rule_id)) or not rule_id
+        raw_match = r.get("Match", "") or r.get("Secret", "")
         out.append(
             {
                 "category": "secret_exposure",
@@ -77,12 +83,12 @@ def from_gitleaks(target, data):
                 "confidence": "low" if low_conf else "high",
                 "_verify": "entropy/generic match — verify this is a live secret, not a placeholder or fixture" if low_conf else None,
                 "title": title.replace("-", " ").title(),
-                "evidenceExcerpt": redact(r.get("Match", "") or r.get("Secret", "")),
+                "evidenceExcerpt": redact(raw_match),
                 "filePath": f,
                 "lineStart": line,
                 "lineEnd": line,
                 "remediationText": "Remove the secret from source, rotate it, and load it from an environment variable or a secrets manager.",
-                "fingerprint": fingerprint("secret", f, line, title),
+                "fingerprint": fingerprint("secret", f, title, norm(raw_match) or line),
                 "scanner": "gitleaks",
             }
         )
@@ -99,7 +105,7 @@ def classify_sast(rule_id, message):
     if any(k in text for k in ("sqli", "sql inject", "cmdi", "command inject", "rce", "eval(", "arbitrary code", "deserial", "pickle", "ssti", "template inject")):
         return "injection"
     if any(k in text for k in ("xss", "innerhtml")):
-        return "data_exposure"
+        return "injection"
     if any(k in text for k in ("auth", "jwt", "session", "hardcoded password")):
         return "auth_issue"
     if any(k in text for k in ("cors", "tls", "ssl", "config", "insecure random")):
@@ -139,7 +145,7 @@ def from_sarif(target, data):
                     "lineStart": ls,
                     "lineEnd": le,
                     "remediationText": rule_meta.get(rid, {}).get("help", {}).get("text", "") or "Refactor to remove the unsafe construct; use parameterized/escaped APIs.",
-                    "fingerprint": fingerprint(category, f, ls, rid),
+                    "fingerprint": fingerprint(category, f, rid, norm(snippet) or ls),
                     "scanner": scanner,
                 }
             )
@@ -194,14 +200,22 @@ def from_manual(target):
     except Exception:
         return []
     out = []
+    valid_cats = {"secret_exposure", "injection", "auth_issue", "dependency_risk",
+                  "ai_specific", "config_issue", "data_exposure", "insecure_pattern"}
     for m in data.get("findings", []) or []:
+        sev = str(m.get("severity", "medium")).lower()
+        if sev not in SEV_WEIGHT:
+            sev = "medium"
+        cat = m.get("category", "insecure_pattern")
+        if cat not in valid_cats:
+            cat = "insecure_pattern"
         fp = m.get("fingerprint") or fingerprint(
-            "manual", m.get("filePath", ""), m.get("lineStart"), m.get("title", "")
+            "manual", m.get("filePath", ""), m.get("title", ""), norm(m.get("evidenceExcerpt", ""))
         )
         out.append(
             {
-                "category": m.get("category", "insecure_pattern"),
-                "severity": m.get("severity", "medium"),
+                "category": cat,
+                "severity": sev,
                 "confidence": m.get("confidence", "high"),
                 "title": m.get("title", "Manual review finding"),
                 "evidenceExcerpt": redact(m.get("evidenceExcerpt", "")),
@@ -216,14 +230,18 @@ def from_manual(target):
     return out
 
 
-def risk_band(score):
-    if score >= 70:
+def risk_band(by_sev):
+    """Headline band reflects the WORST severity actually present. 'critical' and 'high'
+    require at least one such finding, so a large volume of medium/low findings can no longer
+    saturate the additive score into a critical headline (the additive riskScore still
+    captures volume for prioritization)."""
+    if by_sev.get("critical", 0) > 0:
         return "critical"
-    if score >= 40:
+    if by_sev.get("high", 0) > 0:
         return "high"
-    if score >= 15:
+    if by_sev.get("medium", 0) > 0:
         return "medium"
-    if score > 0:
+    if by_sev.get("low", 0) > 0:
         return "low"
     return "clean"
 
@@ -231,14 +249,32 @@ def risk_band(score):
 def main():
     target, raw, degraded_csv = sys.argv[1], sys.argv[2], sys.argv[3]
     baseline_path = sys.argv[4] if len(sys.argv) > 4 else ""
+    applicable_csv = sys.argv[5] if len(sys.argv) > 5 else ""
     degraded = [d for d in degraded_csv.split(",") if d]
+    applicable = [a for a in applicable_csv.split(",") if a] or ["gitleaks", "opengrep", "osv"]
+    ran = [e for e in applicable if e not in degraded]
+    missing = [e for e in applicable if e in degraded]
+    if not ran:
+        scan_status = "failed"
+    elif missing:
+        scan_status = "partial"
+    else:
+        scan_status = "complete"
 
+    osv_raw = load(raw, "osv.json", {"findings": []})
+    web_raw = load(raw, "web.json", {})
+    toolchain = load(raw, "toolchain.json", None)
     findings = []
     findings += from_gitleaks(target, load(raw, "gitleaks.json", []))
     findings += from_sarif(target, load(raw, "sast.sarif", {"runs": []}))
-    findings += from_osv(target, load(raw, "osv.json", {"findings": []}))
+    findings += from_osv(target, osv_raw)
     findings += from_web(target, raw)
     findings += from_manual(target)
+
+    # defensive: never let a bad severity crash scoring/sorting
+    for f in findings:
+        if f.get("severity") not in SEV_WEIGHT:
+            f["severity"] = "medium"
 
     # confidence + path adjustments: fixtures/tests are rarely production risk,
     # and low-confidence secret matches shouldn't dominate the headline score.
@@ -299,14 +335,68 @@ def main():
             ],
         }
 
+    if findings:
+        overall = risk_band(by_sev)
+        risk_score = score
+    elif scan_status == "complete":
+        overall = "clean"
+        risk_score = 0
+    else:
+        # engines that should have run didn't — a zero here would be a lie
+        overall = "unknown"
+        risk_score = None
+
     summary = {
-        "overallRisk": risk_band(score),
-        "riskScore": score,
+        "scanStatus": scan_status,
+        "overallRisk": overall,
+        "riskScore": risk_score,
         "totalFindings": len(findings),
         "bySeverity": by_sev,
         "byCategory": by_cat,
+        "enginesRan": ran,
         "degradedScanners": degraded,
     }
+    if findings and scan_status != "complete":
+        summary["riskScoreQualifier"] = "floor: incomplete coverage — real risk may be higher"
+
+    cov_notes = []
+    osv_status = osv_raw.get("status")
+    perr = osv_raw.get("manifestParseErrors") or []
+    if perr:
+        cov_notes.append("Dependency manifest could not be parsed: " + ", ".join(perr) + ".")
+    if osv_status == "unsupported":
+        files = osv_raw.get("unsupportedManifestFiles") or []
+        skipped = osv_raw.get("skippedSpecifications") or []
+        if files:
+            cov_notes.append("Dependency manifests were found but none are supported: "
+                             + ", ".join(files) + ".")
+        if skipped:
+            shown = ", ".join(f"{s.get('package')} ({s.get('specification')})" for s in skipped[:6])
+            more = "" if len(skipped) <= 6 else f", +{len(skipped) - 6} more"
+            cov_notes.append("Dependencies were declared but their versions could not be resolved: "
+                             + shown + more + ".")
+        if not files and not skipped:
+            cov_notes.append("Recognized dependency manifests could not be assessed.")
+    elif osv_status == "partial":
+        cov_notes.append(f"OSV coverage was incomplete: {osv_raw.get('packagesQueried', 0)} of "
+                         f"{osv_raw.get('packagesDeclared', osv_raw.get('packagesCollected', 0))} "
+                         "declared dependencies assessed.")
+    elif osv_status == "failed":
+        cov_notes.append("OSV could not query the dependency API; dependencies were not assessed.")
+    if isinstance(web_raw, dict) and web_raw.get("status") == "failed":
+        cov_notes.append("DAST could not reach the target; no web assessment was performed.")
+    if cov_notes:
+        summary["coverageNotes"] = cov_notes
+    # per-engine notes (timeout vs unavailable vs error) written by the scanner
+    try:
+        eng_notes = json.loads(open(os.path.join(raw, "engine_notes.json")).read())
+        if eng_notes:
+            summary.setdefault("coverageNotes", []).extend(eng_notes)
+    except Exception:
+        pass
+    if toolchain:
+        summary["toolchain"] = toolchain
+
     if diff:
         summary["changesSinceLastScan"] = {k: diff[k] for k in ("new", "fixed", "persisting")}
 
@@ -317,11 +407,40 @@ def main():
 
     # markdown report
     lines = ["# VibeScan report", ""]
-    lines.append(f"**Overall risk:** {summary['overallRisk'].upper()}  ·  **Score:** {score}/100  ·  **Findings:** {len(findings)}")
+    if scan_status == "failed":
+        lines.append(f"> ⛔ **Assessment incomplete — required engines did not complete "
+                     f"({', '.join(missing)}). No conclusion about code safety can be made.**")
+        lines.append("")
+    elif scan_status == "partial":
+        lines.append(f"> ⚠️ **Partial scan — {', '.join(missing)} did not complete. "
+                     f"Findings below are a floor, not a complete result.**")
+        lines.append("")
+    score_str = f"{risk_score}/100" if risk_score is not None else "n/a (incomplete)"
+    lines.append(f"**Overall risk:** {overall.upper()}  ·  **Score:** {score_str}  ·  **Findings:** {len(findings)}")
+    status_line = f"**Scan status:** {scan_status}"
+    if missing:
+        status_line += f"  ·  **Incomplete:** {', '.join(missing)}"
+    lines.append(status_line)
     counts = ", ".join(f"{by_sev[s]} {s}" for s in SEV_ORDER if by_sev[s])
     lines.append(f"**Breakdown:** {counts or 'none'}")
-    if degraded:
-        lines.append(f"**Degraded (engines unavailable):** {', '.join(degraded)}")
+    for note in summary.get("coverageNotes", []):
+        lines.append(f"**Coverage:** {note}")
+    tc = summary.get("toolchain")
+    if tc and tc.get("lockfile") == "present":
+        parts = []
+        g = (tc.get("engines") or {}).get("gitleaks", {})
+        if g.get("pinned"):
+            parts.append(f"gitleaks {g['pinned']} ({g.get('verification', '?')}/{g.get('status', '?')})")
+        s = tc.get("sast") or {}
+        if s.get("selectedEngine"):
+            parts.append(f"SAST {s['selectedEngine']} ({s.get('verification', '?')}/{s.get('status', '?')})")
+        rc = tc.get("rules") or {}
+        if rc.get("pinnedCommit"):
+            parts.append(f"rules pinned@{rc['pinnedCommit']} actual@{rc.get('actualCommit') or '?'} ({rc.get('status', '?')})")
+        if parts:
+            lines.append("**Toolchain:** " + "; ".join(parts))
+    elif tc and tc.get("lockfile") in ("absent", "malformed"):
+        lines.append(f"**Toolchain:** {tc['lockfile']} lockfile — engines unpinned this run")
     high_conf = [f for f in findings if f.get("confidence") != "low"]
     if findings and not high_conf:
         lines.append("")
@@ -340,7 +459,10 @@ def main():
                 lines.append(f"- ~~[{f['severity'].upper()}] {f['title']} ({f['filePath']})~~")
     lines.append("")
     if not findings:
-        lines.append("No findings from the available engines.")
+        if scan_status == "complete":
+            lines.append("No findings. All applicable engines ran.")
+        else:
+            lines.append("No findings were produced, but the scan was incomplete — see the status above.")
     for i, f in enumerate(findings, 1):
         loc = f["filePath"] + (f":{f['lineStart']}" if f["lineStart"] else "")
         tag = " 🆕" if f.get("status") == "new" else ""
@@ -358,7 +480,7 @@ def main():
     with open(os.path.join(out_dir, "report.md"), "w") as f:
         f.write("\n".join(lines))
 
-    print(f"normalized {len(findings)} finding(s), risk {summary['overallRisk']} ({score}/100)")
+    print(f"normalized {len(findings)} finding(s), status {scan_status}, risk {overall} ({score_str})")
 
 
 if __name__ == "__main__":

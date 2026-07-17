@@ -1,5 +1,7 @@
 # VibeScan — a Claude Skill for security scanning
 
+> **Installing:** upload only `vibescan.skill`. Any loose files shipped alongside it are for review/diffing, not for installation.
+
 A self-contained [Claude Skill](https://docs.claude.com) that scans code for exposed
 secrets, injection and other insecure patterns, AI-generated ("vibe-coded") anti-patterns,
 and known-vulnerable dependencies — then returns findings with severity, evidence, and
@@ -11,10 +13,13 @@ code-execution sandbox using open-source engines.
 | Category | Engine | License |
 |---|---|---|
 | Secrets | Gitleaks | MIT |
-| SAST (injection, XSS, etc.) | Opengrep / Semgrep engine + bundled rules | LGPL 2.1 (engine); rules are original |
+| SAST (injection, XSS, etc.) | Opengrep / Semgrep engine + bundled `ai-patterns.yml` | LGPL 2.1 (engine); bundled pack is original |
+| SAST (multi-language, auto-selected) | opengrep-rules mirror | LGPL 2.1 + Commons Clause (no-sell) |
 | Dependency vulnerabilities | OSV.dev API | Apache 2.0 |
 
-TruffleHog (AGPL) and Semgrep's registry rules (SaaS-restricted) are intentionally avoided.
+TruffleHog (AGPL) and Semgrep's registry / `--config auto` path (login + telemetry) are
+intentionally avoided. The opengrep-rules mirror carries a Commons Clause (no-sell) — this is a
+mixed-license build. See `THIRD_PARTY_LICENSES.md`.
 
 ## Install as a skill
 
@@ -31,7 +36,7 @@ Account-skill sync into a Claude Code container can be flaky — if a session re
 isn't found, install it on disk yourself, which always works:
 
 ```bash
-git clone https://github.com/shobhitbhatnagar/vibescan.git ~/.claude/skills/vibescan
+git clone <your-repo-url> ~/.claude/skills/vibescan
 # or, from a checkout of this repo:
 bash install.sh
 ```
@@ -61,7 +66,7 @@ Engines auto-install on first run (with a notice) — missing ones degrade grace
 
 ## Trustworthy severity
 
-The headline risk band is built to be right *before* a human second-guesses it:
+How the headline risk band avoids false alarms:
 
 - **Secret confidence tiering** — named-provider matches (AWS, Stripe, GitHub, private keys)
   are critical; entropy/generic matches are medium and flagged **⚠️ verify**.
@@ -76,10 +81,15 @@ The headline risk band is built to be right *before* a human second-guesses it:
 
 Drop additional Opengrep/Semgrep `*.yml` files into `assets/rules/` — they're picked up
 automatically. Rule `severity: ERROR` maps to high, `WARNING` to medium, `INFO` to low.
+Multi-language coverage beyond this pack comes from the auto-selected opengrep-rules mirror
+(see License).
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE). The bundled rule files and scanner scripts are original work.
-The third-party engines are *invoked, not redistributed*, and keep their own licenses: Gitleaks
-(MIT), Opengrep/Semgrep engine (LGPL 2.1), OSV.dev data (Apache 2.0). None are bundled in this
-repo; they're downloaded at runtime from their own sources.
+VibeScan's own code and the bundled `ai-patterns.yml` pack are MIT (see `LICENSE`). The
+scanner also uses the opengrep-rules mirror for multi-language SAST, which is LGPL 2.1 +
+Commons Clause (no-sell); it is fetched at runtime into `~/.vibescan/` or vendored as a
+submodule. This makes the project mixed-license: fine for personal, internal, and free use,
+but not for a paid or SaaS product while the mirror is present. Full terms and the notice
+requirement are in `THIRD_PARTY_LICENSES.md`. For a fully MIT/sellable build, run without the
+mirror and SAST falls back to the bundled pack only.

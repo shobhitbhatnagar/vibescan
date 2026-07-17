@@ -1,5 +1,10 @@
-.vibescan/raw/
-.vibescan/previous.json
-.vibescan/report.md
+# Build artifacts (attach the skill to the GitHub release instead of committing it)
+vibescan.skill
+*.skill
+# Generated validation evidence (attach to release; don't commit)
+validation-bundle/
+validation-bundle.tar.gz
+# Scan output + Python caches
+.vibescan/
 __pycache__/
 *.pyc

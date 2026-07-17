@@ -41,14 +41,20 @@ review adds what they can't reach.
 | Category | Engine | Examples |
 |---|---|---|
 | `secret_exposure` | Gitleaks (MIT) | AWS keys, tokens, private keys, hardcoded passwords |
-| `injection` / `insecure_pattern` | Opengrep (LGPL 2.1) + bundled rules | SQLi, command injection, XSS sinks, path traversal, SSRF, `eval()` |
+| `injection` / `insecure_pattern` | Opengrep/Semgrep (LGPL 2.1) + bundled pack, plus the auto-selected opengrep-rules mirror | SQLi, command injection, XSS sinks, path traversal, SSRF, `eval()` across PHP/Go/Java/Ruby/C#/… |
 | `ai_specific` | `assets/rules/ai-patterns.yml` | hallucinated packages, insecure defaults typical of AI-generated code |
-| `dependency_risk` | OSV.dev (Apache 2.0) | known-vulnerable versions in `package.json` / `requirements.txt` |
+| `dependency_risk` | OSV.dev (Apache 2.0) | known-vulnerable **pinned** versions in `package.json` (npm) / `requirements.txt` (PyPI). Version ranges and lockfiles beyond these are not yet resolved. |
 | DAST (passive) | `web_scan.py` against a deployed URL | missing HSTS/CSP, insecure cookie flags, wildcard CORS, exposed `.env`/`.git`, TLS issues |
 | `review` (manual) | your analysis via `manual.json` | IDOR, tenant isolation, broken auth, crypto misuse — logic flaws engines miss |
 
-All engines are SaaS- and redistribution-safe. TruffleHog (AGPL) and Semgrep's
-registry rules (SaaS-restricted license) are deliberately not used.
+The engine, gitleaks, OSV, and the bundled `ai-patterns.yml` pack are permissively
+licensed. TruffleHog (AGPL) and Semgrep's registry / `--config auto` path (login +
+telemetry, SaaS-restricted rules) are deliberately not used. The broad-coverage
+opengrep-rules mirror is the one non-permissive dependency: LGPL-2.1 + Commons Clause
+(no-sell). That makes this a mixed-license build — fine for personal, internal, and free
+distribution, but not for a paid or SaaS product while the mirror is present. See
+`THIRD_PARTY_LICENSES.md`. For a fully sellable build, run without the mirror; SAST then
+falls back to the bundled pack only.
 
 ## Workflow
 
@@ -106,6 +112,16 @@ Read `report.md` (or `findings.json`) yourself and relay the substance. For each
 beyond the one-line `remediationText`: explain **what** is wrong, **why** it's dangerous, and
 give a **concrete, copy-pasteable fix** in the file's language. Lead with the highest severity.
 Close with the overall risk band and the two or three changes that matter most.
+
+**Check `summary.scanStatus` before you characterize the result.** It is `complete`,
+`partial`, or `failed`. If it is not `complete`, the engines listed in `degradedScanners` did
+not run, and a zero-finding result does **not** mean the code is safe. Never say "clean" or
+"no issues" for a `partial` or `failed` scan. Say the assessment is incomplete, name which
+engines did not run, and treat any findings as a floor. When such a scan finds nothing,
+`overallRisk` is `unknown` and `riskScore` is `null`; when it does find issues, the score
+stands but is a floor (minimum known risk, flagged with `riskScoreQualifier`), not a full
+assessment. Either way, never present a `partial` or `failed` scan as "clean" or as a settled
+score.
 
 **Presenting the report file:** mention its path once, plainly, on a single line at the *end*
 of your response — e.g. "Report: `<path>/report.html`". Do not describe your own output as
@@ -182,16 +198,19 @@ Every finding normalizes to this shape (matches the original VibeScan data model
   "lineStart": 14,
   "lineEnd": 14,
   "remediationText": "Move to an environment variable or a secrets manager.",
+  "confidence": "high | low",
+  "notes": "why a finding is low-confidence — optional, present when confidence is low",
   "fingerprint": "sha256 of category+file+line+rule",
-  "scanner": "gitleaks | opengrep | osv | ai_patterns"
+  "scanner": "gitleaks | opengrep | osv | ai_patterns | dast | review"
 }
 ```
 
 Severity mapping from engine output: SARIF `error` → `high`, `warning` → `medium`,
 `note` → `low`; Gitleaks secrets → `critical`; OSV criticality carries through.
 
-**Secrets are always redacted** in `evidenceExcerpt` (replaced with `[REDACTED]`). Never
-print a live secret back to the user, even when quoting evidence.
+**Secret evidence is redacted** in `evidenceExcerpt`: gitleaks redacts at the source, and the
+normalizer also masks common key shapes (`[REDACTED]`). This is best-effort for non-gitleaks
+evidence, so never paste a raw secret back to the user, even when quoting evidence.
 
 ## Manual findings — fold your review into the report
 
@@ -228,10 +247,51 @@ your analysis, rather than a partial machine result with the real risks stranded
 ## Adding your own rules
 
 `assets/rules/` holds Opengrep YAML rule files. A starter `ai-patterns.yml` ships with the
-skill. Drop additional `*-security.yml` files here (the VibeScan-owned Python/JS/Go/Java/Ruby/
-PHP/C#/Swift/Rust rule packs slot straight in) and they're picked up automatically — no code
-change. Rule `severity: ERROR` → high in findings, `WARNING` → medium, `INFO` → low, so mark
-injection- and RCE-class rules `ERROR`.
+skill. Drop additional `*-security.yml` files here and they're picked up automatically — no
+code change. Rule `severity: ERROR` → high in findings, `WARNING` → medium, `INFO` → low, so
+mark injection- and RCE-class rules `ERROR`.
+
+### Multi-language coverage via the opengrep-rules mirror
+
+Beyond the bundled pack, SAST auto-selects rule folders from an opengrep-rules mirror based
+on the languages present in the target — reproducing `--config auto` offline, with no registry
+login or telemetry. The mirror is resolved in this order:
+
+1. `VIBESCAN_RULES_DIR` — env override; point at a pinned local checkout for reproducibility
+2. `assets/opengrep-rules/` — vendored git submodule, if present
+3. `~/.vibescan/opengrep-rules/` — fetched automatically on first run
+
+With no mirror present, the scanner clones it into the cache on first run (skip with
+`--no-install`; on failure or missing git, SAST degrades to the bundled pack — JS/TS/Python).
+Only the language folders matching the target load, so a PHP repo pulls `php/` rules, not all
+30 languages. License: LGPL-2.1 + Commons Clause (no-sell) — see `THIRD_PARTY_LICENSES.md`.
+
+## Pinned toolchain: update, doctor, lockfile
+
+For reproducible, verified runs, the engines and rules are pinned in `vibescan.lock`
+(exact versions, artifact sha256, verification level, and the rules commit). Scans run
+against the lock; refreshing it is a deliberate step, not something that happens mid-scan.
+
+- `python3 scripts/update.py` — resolve the latest opengrep + gitleaks releases and the
+  latest opengrep-rules commit, download and verify each at the strongest level upstream
+  supports (cosign signature for opengrep; signed checksums, else plain checksums, for
+  gitleaks), install the engines, and write `vibescan.lock`. `--dry-run` resolves and
+  prints the plan without downloading.
+- `python3 scripts/doctor.py` — verify the installed engines against the lock (hash match),
+  report the verification level for each, and run the cached staleness check. Non-zero exit
+  on a hash mismatch, so it can gate CI. `--refresh` forces a fresh staleness check.
+- At scan time, a cached (daily) staleness check prints a one-line, non-blocking notice when
+  a newer engine or rules commit exists. Silence it with `--no-update-check`.
+
+Verification is strict by default: if a locked engine on disk does not match its pinned
+hash, the scan aborts rather than running an unverified binary. `VIBESCAN_VERIFY=permissive`
+downgrades that to a loud warning. When the cosign verifier itself is absent, opengrep is
+installed but stamped `unverified` (a bootstrap gap, not a silent pass). Every report stamps
+the toolchain: engine versions, verification level, and the rules commit. With no lockfile,
+scans still run but are stamped as unpinned.
+
+
+Environment flags: `VIBESCAN_VERIFY=permissive` downgrades lock hard-fails to warnings; `VIBESCAN_OFFLINE=1` disables VibeScan's own built-in network operations (rules fetch, OSV, GitHub queries) — it is not an OS-level network sandbox and does not block a target DAST loopback socket; `VIBESCAN_TIMING=1` prints per-stage wall time to stderr for diagnosing slow scans; `--no-update-check` skips the staleness check.
 
 ## Notes
 
