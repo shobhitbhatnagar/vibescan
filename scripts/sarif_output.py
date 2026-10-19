@@ -112,10 +112,10 @@ def serialize(findings, summary, version):
                                                                 {"opengrep", "semgrep"}, "unknown"),
                                      "status": _safe_label(sast.get("status")),
                                      "pinned": _safe_label(sast.get("pinned"))}
-        rules = toolchain.get("rules") if isinstance(toolchain.get("rules"), dict) else {}
-        coverage["toolchainRules"] = {"pinnedCommit": _safe_label(rules.get("pinnedCommit")),
-                                      "actualCommit": _safe_label(rules.get("actualCommit")),
-                                      "status": _safe_label(rules.get("status"))}
+        rule_metadata = toolchain.get("rules") if isinstance(toolchain.get("rules"), dict) else {}
+        coverage["toolchainRules"] = {"pinnedCommit": _safe_label(rule_metadata.get("pinnedCommit")),
+                                      "actualCommit": _safe_label(rule_metadata.get("actualCommit")),
+                                      "status": _safe_label(rule_metadata.get("status"))}
     driver = {"name": "VibeScan", "version": str(version),
               "informationUri": "https://github.com/shobhitbhatnagar/vibescan",
               "rules": [rules[k] for k in sorted(rules)]}

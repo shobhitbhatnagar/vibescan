@@ -61,6 +61,16 @@ class SarifOutputTests(unittest.TestCase):
         self.assertEqual(run["results"][0]["partialFingerprints"]["vibescan/v1"], "a" * 16)
         self.assertEqual(run["results"][1]["level"], "error")
 
+    def test_toolchain_rule_metadata_preserves_finding_rule_descriptors(self):
+        doc = self.valid([finding()], {"scanStatus": "complete",
+                                        "toolchain": {"rules": {"pinnedCommit": "a" * 12,
+                                                                "actualCommit": "a" * 12,
+                                                                "status": "verified"}}})
+        run = doc["runs"][0]
+        self.assertEqual(run["tool"]["driver"]["rules"][0]["id"],
+                         "vibescan/opengrep/unsafe-eval")
+        self.assertEqual(run["properties"]["toolchainRules"]["status"], "verified")
+
     def test_unsafe_locations_are_omitted_without_losing_findings(self):
         for path in ("../secret.py", "/private/secret.py", "C:\\secret.py", "src/../secret.py",
                      "https://private.example/path", "src//bad.py", "src/\x00bad.py"):
