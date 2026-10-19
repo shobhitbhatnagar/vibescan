@@ -6,5 +6,7 @@ validation-bundle/
 validation-bundle.tar.gz
 # Scan output + Python caches
 .vibescan/
+.vibefactory/
+.venv/
 __pycache__/
 *.pyc

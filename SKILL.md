@@ -92,9 +92,17 @@ python scripts\scan.py  <dir-or-repo-url>        # Windows
 (`scripts/run_scan.sh` and `scripts/scan_repo.sh` still work on macOS/Linux — they're thin
 shims that call `scan.py`.)
 
-This orchestrates the engines, then calls `normalize.py` and `render_html.py`. It writes three
-files into the target's `.vibescan/` folder and prints their paths: `findings.json`
-(machine-readable), `report.md`, and `report.html`.
+This orchestrates the engines, then calls `normalize.py` and `render_html.py`. It writes
+`findings.json` (the versioned machine-readable result), `findings.sarif` (redacted SARIF
+2.1.0), `report.md`, and `report.html` under the target's `.vibescan/` folder. SARIF
+omits private/unsafe locations and evidence excerpts. A separate trusted publisher
+must validate the output before any code-scanning upload; this scanner does not upload it.
+
+The offline SARIF contract check uses the vendored OASIS schema and pinned test
+dependencies: create `.venv`, install `tests/requirements.lock` with pip's
+`--require-hashes --only-binary=:all:` options, then run
+`python -m unittest tests/test_sarif_output.py`. The test lock's provenance is
+recorded in `tests/requirements.provenance.md`.
 
 **Engines & platforms.** On first run any missing engine is auto-installed with a printed
 notice — gitleaks into `~/.vibescan/bin`, semgrep into the user site; OSV needs nothing. Pass

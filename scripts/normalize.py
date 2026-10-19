@@ -10,6 +10,8 @@ import os
 import re
 import sys
 
+import sarif_output
+
 SEV_WEIGHT = {"critical": 40, "high": 20, "medium": 8, "low": 3, "info": 0}
 SEV_ORDER = ["critical", "high", "medium", "low", "info"]
 SARIF_SEV = {"error": "high", "warning": "medium", "note": "low", "none": "info"}
@@ -53,6 +55,12 @@ def redact(text):
 
 
 def rel(target, path):
+    if not path:
+        return ""
+    if not os.path.isabs(path):
+        # Engine SARIF commonly supplies repository-relative URIs. Resolving
+        # those against this process's cwd would fabricate parent traversals.
+        return path.replace("\\", "/")
     try:
         return os.path.relpath(path, target)
     except Exception:
@@ -90,6 +98,7 @@ def from_gitleaks(target, data):
                 "remediationText": "Remove the secret from source, rotate it, and load it from an environment variable or a secrets manager.",
                 "fingerprint": fingerprint("secret", f, title, norm(raw_match) or line),
                 "scanner": "gitleaks",
+                "ruleId": rule_id,
             }
         )
     return out
@@ -147,6 +156,7 @@ def from_sarif(target, data):
                     "remediationText": rule_meta.get(rid, {}).get("help", {}).get("text", "") or "Refactor to remove the unsafe construct; use parameterized/escaped APIs.",
                     "fingerprint": fingerprint(category, f, rid, norm(snippet) or ls),
                     "scanner": scanner,
+                    "ruleId": rid,
                 }
             )
     return out
@@ -168,6 +178,7 @@ def from_osv(target, data):
                 "remediationText": f"Upgrade {v['package']} to a patched version. See https://osv.dev/vulnerability/{v.get('id','')}.",
                 "fingerprint": fingerprint("dep", v["package"], v["version"], v.get("id", "")),
                 "scanner": "osv",
+                "ruleId": v.get("id", ""),
             }
         )
     return out
@@ -404,6 +415,10 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
     with open(os.path.join(out_dir, "findings.json"), "w") as f:
         json.dump({"summary": summary, "findings": findings}, f, indent=2)
+    version_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "VERSION")
+    with open(version_path, encoding="utf-8") as f:
+        scanner_version = f.read().strip()
+    sarif_output.write(os.path.join(out_dir, "findings.sarif"), findings, summary, scanner_version)
 
     # markdown report
     lines = ["# VibeScan report", ""]
