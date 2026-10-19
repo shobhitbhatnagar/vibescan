@@ -31,10 +31,12 @@ def _safe_label(value):
         return "unknown"
     if value in {"verified", "hash-mismatch", "pinned-but-missing", "present-unpinned",
                  "absent", "substituted-unpinned", "invalid-pinned-commit",
-                 "commit-mismatch", "dirty", "origin-mismatch", "unknown"}:
+                 "commit-mismatch", "working-tree-unverifiable", "working-tree-modified",
+                 "origin-mismatch", "content-verified-origin-unknown", "mirror-absent",
+                 "unpinned", "unknown"}:
         return value
     if re.fullmatch(r"[0-9a-fA-F]{12,40}", value):
-        return value.lower()
+        return "digest-" + hashlib.sha256(("vibescan-label-v1\0" + value).encode("utf-8")).hexdigest()[:16]
     if re.fullmatch(r"v?[0-9]{1,4}(?:\.[0-9]{1,4}){1,3}(?:[-+][0-9A-Za-z.-]{1,16})?", value):
         return value
     return "unknown"

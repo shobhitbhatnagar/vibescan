@@ -95,17 +95,27 @@ class SarifOutputTests(unittest.TestCase):
 
     def test_untrusted_rule_and_toolchain_labels_never_copy_key_shaped_values(self):
         marker = "AKIA" + "ABCDEFGHIJKLMNOP"
+        hex_marker = "ab12" * 8
         doc = self.valid([finding(ruleId=marker), finding(ruleId="unsafe-eval")],
                          {"scanStatus": "complete", "toolchain": {
-                             "engines": {"gitleaks": {"pinned": marker, "status": marker}},
-                             "rules": {"pinnedCommit": marker, "actualCommit": marker,
+                             "engines": {"gitleaks": {"pinned": hex_marker, "status": marker}},
+                             "rules": {"pinnedCommit": hex_marker, "actualCommit": hex_marker,
                                        "status": marker}}})
         encoded = json.dumps(doc)
         self.assertNotIn(marker, encoded)
         self.assertNotIn(marker.lower(), encoded)
+        self.assertNotIn(hex_marker, encoded)
         self.assertEqual(doc["runs"][0]["properties"]["toolchainEngines"]["gitleaks"],
-                         {"pinned": "unknown", "status": "unknown"})
+                         {"pinned": sarif_output._safe_label(hex_marker), "status": "unknown"})
         self.assertEqual(len(doc["runs"][0]["tool"]["driver"]["rules"]), 2)
+
+    def test_known_rules_statuses_remain_distinct(self):
+        for status in ("working-tree-unverifiable", "working-tree-modified",
+                       "content-verified-origin-unknown", "mirror-absent", "unpinned"):
+            with self.subTest(status=status):
+                doc = self.valid([], {"scanStatus": "partial", "toolchain": {
+                    "rules": {"status": status}}})
+                self.assertEqual(doc["runs"][0]["properties"]["toolchainRules"]["status"], status)
 
     def test_normalization_keeps_json_and_writes_valid_sarif(self):
         with tempfile.TemporaryDirectory() as root:
