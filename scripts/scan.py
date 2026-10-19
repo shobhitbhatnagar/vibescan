@@ -719,7 +719,7 @@ def main():
             sys.exit(1)
         rr = subprocess.run([sys.executable, str(HERE / "render_html.py"), str(target)], stdout=DEVNULL)
         if rr.returncode != 0:
-            print("-- warning: HTML report generation failed (findings.json and report.md still written)")
+            print("-- warning: HTML report generation failed (JSON, SARIF and Markdown still written)")
         out = target / ".vibescan"
         print(f"re-rendered with manual findings:\n  {out / 'report.html'}")
         return
@@ -760,8 +760,9 @@ def main():
             sys.exit(1)
         rr = subprocess.run([sys.executable, str(HERE / "render_html.py"), str(target)], stdout=DEVNULL)
         if rr.returncode != 0:
-            print("-- warning: HTML report generation failed (findings.json and report.md still written)")
+            print("-- warning: HTML report generation failed (JSON, SARIF and Markdown still written)")
         print(f"\nfindings: {out / 'findings.json'}")
+        print(f"sarif:    {out / 'findings.sarif'}")
         print(f"report:   {out / 'report.md'}")
         print(f"html:     {out / 'report.html'}")
         return
@@ -839,10 +840,11 @@ def main():
     r = subprocess.run([sys.executable, str(HERE / "render_html.py"), str(target)],
                        stdout=DEVNULL)
     if r.returncode != 0:
-        print("-- warning: HTML report generation failed (findings.json and report.md still written)")
+        print("-- warning: HTML report generation failed (JSON, SARIF and Markdown still written)")
     _ts = _stage("render-html", _ts)
 
     print(f"\nfindings: {out / 'findings.json'}")
+    print(f"sarif:    {out / 'findings.sarif'}")
     print(f"report:   {out / 'report.md'}")
     print(f"html:     {out / 'report.html'}")
     _stage("finalize", _ts)
