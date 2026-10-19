@@ -26,6 +26,13 @@ def _known(value, allowed, fallback):
     return value if isinstance(value, str) and value in allowed else fallback
 
 
+def _safe_label(value):
+    if (isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,39}", value)
+            and not re.search(r"[A-Za-z0-9]{24,}", value)):
+        return value
+    return "unknown"
+
+
 def _safe_path(value):
     """Keep only repository-relative file paths; never serialize host paths/URLs."""
     if not isinstance(value, str) or not value or any(ord(c) < 32 for c in value):
@@ -93,6 +100,22 @@ def serialize(findings, summary, version):
     if isinstance(toolchain, dict):
         coverage["toolchainLockfile"] = _known(toolchain.get("lockfile"), {"present", "absent", "malformed"}, "unknown")
         coverage["toolchainVerifyMode"] = _known(toolchain.get("verifyMode"), {"strict", "permissive"}, "unknown")
+        engines = toolchain.get("engines") if isinstance(toolchain.get("engines"), dict) else {}
+        coverage["toolchainEngines"] = {
+            name: {"pinned": _safe_label(record.get("pinned")),
+                   "status": _safe_label(record.get("status"))}
+            for name, record in engines.items()
+            if name in SCANNERS and isinstance(record, dict)
+        }
+        sast = toolchain.get("sast") if isinstance(toolchain.get("sast"), dict) else {}
+        coverage["toolchainSast"] = {"selectedEngine": _known(sast.get("selectedEngine"),
+                                                                {"opengrep", "semgrep"}, "unknown"),
+                                     "status": _safe_label(sast.get("status")),
+                                     "pinned": _safe_label(sast.get("pinned"))}
+        rules = toolchain.get("rules") if isinstance(toolchain.get("rules"), dict) else {}
+        coverage["toolchainRules"] = {"pinnedCommit": _safe_label(rules.get("pinnedCommit")),
+                                      "actualCommit": _safe_label(rules.get("actualCommit")),
+                                      "status": _safe_label(rules.get("status"))}
     driver = {"name": "VibeScan", "version": str(version),
               "informationUri": "https://github.com/shobhitbhatnagar/vibescan",
               "rules": [rules[k] for k in sorted(rules)]}

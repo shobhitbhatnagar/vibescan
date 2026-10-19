@@ -39,11 +39,14 @@ class SarifOutputTests(unittest.TestCase):
         for status in ("complete", "partial", "failed"):
             doc = self.valid([], {"scanStatus": status, "enginesRan": ["gitleaks"],
                                   "degradedScanners": ["opengrep"],
-                                  "toolchain": {"lockfile": "absent", "verifyMode": "strict", "sast": {"path": "/private/engine"}}})
+                                  "toolchain": {"lockfile": "absent", "verifyMode": "strict",
+                                                "engines": {"gitleaks": {"pinned": "v8.30.1", "status": "verified"}},
+                                                "sast": {"path": "/private/engine"}}})
             run = doc["runs"][0]
             self.assertEqual(run["properties"]["scanStatus"], status)
             self.assertEqual(run["results"], [])
             self.assertNotIn("/private/engine", json.dumps(doc))
+            self.assertEqual(run["properties"]["toolchainEngines"]["gitleaks"]["pinned"], "v8.30.1")
 
     def test_multiple_engines_preserve_rules_fingerprints_and_safe_location(self):
         doc = self.valid([finding(), finding(scanner="gitleaks", category="secret_exposure",
