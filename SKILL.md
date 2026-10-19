@@ -98,6 +98,12 @@ This orchestrates the engines, then calls `normalize.py` and `render_html.py`. I
 omits private/unsafe locations and evidence excerpts. A separate trusted publisher
 must validate the output before any code-scanning upload; this scanner does not upload it.
 
+The offline SARIF contract check uses the vendored OASIS schema and pinned test
+dependencies: create `.venv`, install `tests/requirements.lock` with pip's
+`--require-hashes --only-binary=:all:` options, then run
+`python -m unittest tests/test_sarif_output.py`. The test lock's provenance is
+recorded in `tests/requirements.provenance.md`.
+
 **Engines & platforms.** On first run any missing engine is auto-installed with a printed
 notice — gitleaks into `~/.vibescan/bin`, semgrep into the user site; OSV needs nothing. Pass
 `--no-install` (or `VIBESCAN_NO_INSTALL=1`) to skip and just degrade. Coverage by platform:
