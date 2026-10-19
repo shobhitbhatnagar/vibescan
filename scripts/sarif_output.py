@@ -27,8 +27,15 @@ def _known(value, allowed, fallback):
 
 
 def _safe_label(value):
-    if (isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,39}", value)
-            and not re.search(r"[A-Za-z0-9]{24,}", value)):
+    if not isinstance(value, str):
+        return "unknown"
+    if value in {"verified", "hash-mismatch", "pinned-but-missing", "present-unpinned",
+                 "absent", "substituted-unpinned", "invalid-pinned-commit",
+                 "commit-mismatch", "dirty", "origin-mismatch", "unknown"}:
+        return value
+    if re.fullmatch(r"[0-9a-fA-F]{12,40}", value):
+        return value.lower()
+    if re.fullmatch(r"v?[0-9]{1,4}(?:\.[0-9]{1,4}){1,3}(?:[-+][0-9A-Za-z.-]{1,16})?", value):
         return value
     return "unknown"
 
@@ -53,11 +60,10 @@ def _fingerprint(value, rule_id):
 
 
 def _rule_suffix(value, category):
-    if (isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", value)
-            and not re.search(r"[A-Za-z0-9]{24,}", value)):
-        return value.lower()
+    # Rule IDs can be supplied by the scanned repository's configuration. Keep
+    # stable rule identity without copying potentially credential-shaped text.
     if value:
-        return "rule-" + hashlib.sha256(str(value).encode("utf-8")).hexdigest()[:12]
+        return "rule-" + hashlib.sha256(("vibescan-rule-v1\0" + str(value)).encode("utf-8")).hexdigest()[:16]
     return category
 
 

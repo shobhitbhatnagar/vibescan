@@ -56,7 +56,8 @@ class SarifOutputTests(unittest.TestCase):
                           "degradedScanners": []})
         run = doc["runs"][0]
         self.assertEqual(len(run["tool"]["driver"]["rules"]), 2)
-        self.assertEqual(run["results"][0]["ruleId"], "vibescan/opengrep/unsafe-eval")
+        self.assertEqual(run["results"][0]["ruleId"],
+                         "vibescan/opengrep/" + sarif_output._rule_suffix("unsafe-eval", "injection"))
         self.assertEqual(run["results"][0]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"], "src/caf%C3%A9.py")
         self.assertEqual(run["results"][0]["partialFingerprints"]["vibescan/v1"], "a" * 16)
         self.assertEqual(run["results"][1]["level"], "error")
@@ -68,7 +69,7 @@ class SarifOutputTests(unittest.TestCase):
                                                                 "status": "verified"}}})
         run = doc["runs"][0]
         self.assertEqual(run["tool"]["driver"]["rules"][0]["id"],
-                         "vibescan/opengrep/unsafe-eval")
+                         "vibescan/opengrep/" + sarif_output._rule_suffix("unsafe-eval", "injection"))
         self.assertEqual(run["properties"]["toolchainRules"]["status"], "verified")
 
     def test_unsafe_locations_are_omitted_without_losing_findings(self):
@@ -91,6 +92,20 @@ class SarifOutputTests(unittest.TestCase):
                           "toolchain": {"path": marker, "verifyMode": marker}})
         self.assertNotIn(marker, json.dumps(doc))
         self.assertEqual(doc["runs"][0]["properties"]["enginesRan"], [])
+
+    def test_untrusted_rule_and_toolchain_labels_never_copy_key_shaped_values(self):
+        marker = "AKIA" + "ABCDEFGHIJKLMNOP"
+        doc = self.valid([finding(ruleId=marker), finding(ruleId="unsafe-eval")],
+                         {"scanStatus": "complete", "toolchain": {
+                             "engines": {"gitleaks": {"pinned": marker, "status": marker}},
+                             "rules": {"pinnedCommit": marker, "actualCommit": marker,
+                                       "status": marker}}})
+        encoded = json.dumps(doc)
+        self.assertNotIn(marker, encoded)
+        self.assertNotIn(marker.lower(), encoded)
+        self.assertEqual(doc["runs"][0]["properties"]["toolchainEngines"]["gitleaks"],
+                         {"pinned": "unknown", "status": "unknown"})
+        self.assertEqual(len(doc["runs"][0]["tool"]["driver"]["rules"]), 2)
 
     def test_normalization_keeps_json_and_writes_valid_sarif(self):
         with tempfile.TemporaryDirectory() as root:
